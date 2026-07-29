@@ -6,6 +6,8 @@ The guardrail scans user input before LiteLLM forwards the request to the model.
 
 This is a starter integration intended to get traffic flowing to and from F5 AI Security guardrails through LiteLLM. It does not cover every ScanAPI option, every policy configuration, or every possible AI workflow integration pattern.
 
+This example is not a fully maintained product integration. Changes in LiteLLM or F5 AI Security APIs may require code or configuration updates.
+
 ## Files
 
 - `f5_guardrail.py`: LiteLLM custom guardrail implementation.
