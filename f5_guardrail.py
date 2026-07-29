@@ -86,10 +86,14 @@ class f5Guardrail(CustomGuardrail):
                 raise Exception("Redacted outcome without redactedInput")
             return redacted
 
-        # flagged indicates a guardrail match; blocked is returned when ScanAPI
-        # evaluates a blocking guardrail with flagOnly=false. This integration
-        # blocks both outcomes before the request reaches the model.
-        if outcome in ("flagged", "blocked"):
+        # flagged indicates a guardrail match that is not configured to block.
+        # Allow the workflow to continue with the original input.
+        if outcome == "flagged":
+            return text
+
+        # blocked is returned when ScanAPI evaluates a blocking guardrail with
+        # flagOnly=false. Stop the request before it reaches the model.
+        if outcome == "blocked":
             raise Exception(self._policy_violation_message(response_data, outcome))
 
         # Unknown or missing outcomes fail closed so ScanAPI changes do not

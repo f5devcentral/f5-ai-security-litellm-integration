@@ -2,7 +2,7 @@
 
 This repository shows how to call F5 AI Security ScanAPI as a LiteLLM pre-call custom guardrail.
 
-The guardrail scans user input before LiteLLM forwards the request to the model. It allows cleared prompts, forwards redacted prompts when ScanAPI returns `redactedInput`, and blocks prompts when ScanAPI returns `flagged` or `blocked`.
+The guardrail scans user input before LiteLLM forwards the request to the model. It allows cleared prompts, forwards redacted prompts when ScanAPI returns `redactedInput`, allows flagged prompts to continue, and blocks prompts when ScanAPI returns `blocked`.
 
 ## Files
 
@@ -17,11 +17,22 @@ The guardrail scans user input before LiteLLM forwards the request to the model.
 | --- | --- |
 | `cleared` | Forward the original prompt. |
 | `redacted` | Forward `redactedInput` to the model. |
-| `flagged` | Block the request. |
+| `flagged` | Forward the original prompt and allow the workflow to continue. |
 | `blocked` | Block the request. |
 | missing or unknown | Fail closed and block the request. |
 
-The example sends `flagOnly: false` to ScanAPI so blocking guardrails can return the `blocked` outcome. This integration treats both `flagged` and `blocked` as blocked LiteLLM requests.
+The example sends `flagOnly: false` to ScanAPI so blocking guardrails can return the `blocked` outcome. In this implementation, `flagged` is treated as a signal and `blocked` is treated as an enforcement decision.
+
+## Where to Scan
+
+F5 AI Security ScanAPI can be invoked at multiple points in an AI workflow:
+
+- User input before it reaches the model.
+- Tool call inputs before an agent invokes an external tool.
+- Tool call outputs before they are added back into model context.
+- Generated model responses before they are returned to an end user or downstream system.
+
+This repository implements the first pattern with a LiteLLM `pre_call` guardrail. The same ScanAPI decision handling can be reused in application code, agent middleware, or a LiteLLM post-call guardrail for other workflow stages.
 
 ## Requirements
 
@@ -89,10 +100,10 @@ guardrails:
 
 `default_on: true` applies the guardrail automatically.
 
-`flag_only: false` sends `flagOnly: false` to ScanAPI, allowing F5 AI Security to return `blocked` for blocking guardrails.
+`flag_only: false` sends `flagOnly: false` to ScanAPI, allowing F5 AI Security to return `blocked` for blocking guardrails. If ScanAPI returns `flagged`, this example allows the LiteLLM request to continue.
 
 `api_base` defaults to the US region shown above. You can also set `F5_GUARDRAILS_API_BASE` in the environment if you need a different F5 AI Security base URL.
 
 ## Notes
 
-This example scans prompts before the model call. It does not scan model responses. To moderate both prompts and responses, add a separate LiteLLM post-call guardrail or scan model output in your application layer.
+This example scans prompts before the model call. To moderate the full AI workflow, add scans around tool use and generated responses as appropriate for your application.
