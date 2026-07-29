@@ -4,6 +4,8 @@ This repository shows how to call F5 AI Security ScanAPI as a LiteLLM pre-call c
 
 The guardrail scans user input before LiteLLM forwards the request to the model. It allows cleared prompts, forwards redacted prompts when ScanAPI returns `redactedInput`, allows flagged prompts to continue, and blocks prompts when ScanAPI returns `blocked`.
 
+This is a starter integration intended to get traffic flowing to and from F5 AI Security guardrails through LiteLLM. It does not cover every ScanAPI option, every policy configuration, or every possible AI workflow integration pattern.
+
 ## Files
 
 - `f5_guardrail.py`: LiteLLM custom guardrail implementation.
@@ -107,3 +109,5 @@ guardrails:
 ## Notes
 
 This example scans prompts before the model call. To moderate the full AI workflow, add scans around tool use and generated responses as appropriate for your application.
+
+Treat this repository as a reference starting point. Production deployments should tune F5 AI Security policies, request metadata, error handling, logging, and scan placement for the application architecture they are protecting.
