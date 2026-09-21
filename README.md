@@ -1,10 +1,10 @@
 # F5 AI Security LiteLLM Integration
 
-This repository shows how to call F5 AI Security ScanAPI as a LiteLLM pre-call custom guardrail.
+This repository shows how to call F5 AI Security ScanAPI from a LiteLLM custom guardrail.
 
-The guardrail scans user input before LiteLLM forwards the request to the model. It allows cleared prompts, forwards redacted prompts when ScanAPI returns `redactedInput`, allows flagged prompts to continue, and blocks prompts when ScanAPI returns `blocked`.
+This branch is intended for customer testing with **LiteLLM v1.85.0**. LiteLLM changed custom guardrail calling conventions across releases, and this branch is intentionally version-specific.
 
-This is a starter integration intended to get traffic flowing to and from F5 AI Security guardrails through LiteLLM. It does not cover every ScanAPI option, every policy configuration, or every possible AI workflow integration pattern.
+The default configuration scans user input before LiteLLM forwards the request to the model. It allows cleared prompts, forwards redacted prompts when ScanAPI returns `redactedInput`, allows flagged prompts to continue, and blocks prompts when ScanAPI returns `blocked`.
 
 This example is not a fully maintained product integration. Changes in LiteLLM or F5 AI Security APIs may require code or configuration updates.
 
@@ -12,8 +12,21 @@ This example is not a fully maintained product integration. Changes in LiteLLM o
 
 - `f5_guardrail.py`: LiteLLM custom guardrail implementation.
 - `config.yaml`: Minimal LiteLLM proxy configuration.
+- `config.multi-project.example.yaml`: Example routing multiple application aliases to different F5 projects.
 - `.env.example`: Required environment variables.
 - `requirements.txt`: Python dependencies for running the example.
+
+## Version Scope
+
+This fork has been tested against the LiteLLM Docker image:
+
+```text
+ghcr.io/berriai/litellm:1.85.0
+```
+
+LiteLLM v1.85 passes custom guardrail payloads as a dict-like `inputs` object, for example `{"texts": [...]}`. The guardrail implementation in this branch handles that shape and returns the same shape back to LiteLLM.
+
+Keep the main branch focused on the latest LiteLLM behavior. Use this branch only for LiteLLM v1.85 testing.
 
 ## Behavior
 
@@ -46,25 +59,35 @@ This repository implements the first pattern with a LiteLLM `pre_call` guardrail
 
 ## Quick Start
 
-Install dependencies:
+Set environment variables. Do not commit real tokens.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+export OPENAI_API_KEY="your-openai-api-key"
+export F5_GUARDRAILS_API_TOKEN="your-f5-ai-security-token"
+export F5_GUARDRAILS_API_BASE="https://www.us1.calypsoai.app/backend/v1"
 ```
 
-Set environment variables:
+Start LiteLLM v1.85 with Docker:
 
 ```bash
-export F5_GUARDRAILS_API_TOKEN="your-f5-token"
-export OPENAI_API_KEY="your-openai-token"
+docker rm -f litellm-test 2>/dev/null || true
+
+docker run -d \
+  --name litellm-test \
+  -p 4000:4000 \
+  -v "$(pwd)":/app/src \
+  -e PYTHONPATH="/app/src" \
+  -e OPENAI_API_KEY="${OPENAI_API_KEY}" \
+  -e F5_GUARDRAILS_API_TOKEN="${F5_GUARDRAILS_API_TOKEN}" \
+  -e F5_GUARDRAILS_API_BASE="${F5_GUARDRAILS_API_BASE}" \
+  ghcr.io/berriai/litellm:1.85.0 \
+  --config /app/src/config.yaml --port 4000 --detailed_debug
 ```
 
-Start the LiteLLM proxy:
+Watch logs:
 
 ```bash
-litellm --config config.yaml
+docker logs -f litellm-test
 ```
 
 Send a request through LiteLLM:
@@ -84,29 +107,148 @@ curl http://localhost:4000/v1/chat/completions \
   }'
 ```
 
+Expected log lines when the guardrail runs:
+
+```text
+F5 Guardrail: async_pre_call_hook running...
+F5 Guardrail (v1.85): Scanning text: '...'
+F5 Guardrail (v1.85): Scan complete. Returning modified inputs.
+```
+
 ## Configuration
 
-The guardrail is registered in `config.yaml`:
+The included `config.yaml` registers the guardrail and enables it for the `gpt-4o-mini` model:
 
 ```yaml
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      guardrails:
+        - f5-guardrail
+
 guardrails:
   - guardrail_name: f5-guardrail
     litellm_params:
       guardrail: f5_guardrail.f5Guardrail
       mode: pre_call
       default_on: true
-      api_key: os.environ/F5_GUARDRAILS_API_TOKEN
-      api_base: https://www.us1.calypsoai.app/backend/v1
+
+litellm_settings:
+  set_verbose: true
+```
+
+Important details:
+
+- `guardrails` under `model_list[].litellm_params` enables the guardrail for that model.
+- Do not use `callbacks` under `litellm_params`; LiteLLM may forward unknown parameters to OpenAI.
+- `mode: pre_call` scans input before calling the model.
+- `default_on: true` keeps the guardrail enabled by default.
+- F5 credentials are read from `F5_GUARDRAILS_API_TOKEN` and `F5_GUARDRAILS_API_BASE`.
+
+The code sends `flagOnly: false` to ScanAPI by default, allowing F5 AI Security to return `blocked` for blocking guardrails. If ScanAPI returns `flagged`, this example allows the LiteLLM request to continue.
+
+`F5_GUARDRAILS_API_BASE` defaults to the US region shown above if unset.
+
+## Multiple Applications and Policies
+
+LiteLLM often sits in front of many applications. The clean mapping is:
+
+```text
+calling application -> LiteLLM model_name alias -> LiteLLM guardrail -> F5 API token -> F5 project/policy
+```
+
+For example, an HR assistant and a makeup assistant can use the same underlying OpenAI model while using different F5 AI Security projects:
+
+```yaml
+model_list:
+  - model_name: hr-assistant
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      guardrails:
+        - f5-hr-project-input
+
+  - model_name: makeup-assistant
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      guardrails:
+        - f5-makeup-project-input
+
+guardrails:
+  - guardrail_name: f5-hr-project-input
+    litellm_params:
+      guardrail: f5_guardrail.f5Guardrail
+      mode: pre_call
+      default_on: true
+      route_models:
+        - hr-assistant
+      api_key: os.environ/F5_HR_PROJECT_API_TOKEN
+      api_base: os.environ/F5_GUARDRAILS_API_BASE
+      flag_only: false
+
+  - guardrail_name: f5-makeup-project-input
+    litellm_params:
+      guardrail: f5_guardrail.f5Guardrail
+      mode: pre_call
+      default_on: true
+      route_models:
+        - makeup-assistant
+      api_key: os.environ/F5_MAKEUP_PROJECT_API_TOKEN
+      api_base: os.environ/F5_GUARDRAILS_API_BASE
       flag_only: false
 ```
 
-`mode: pre_call` tells LiteLLM to scan input before calling the model.
+In this pattern, the client chooses the application route by sending `model: "hr-assistant"` or `model: "makeup-assistant"` to LiteLLM. LiteLLM still calls `openai/gpt-4o-mini` behind the scenes, but it applies the guardrail attached to that route.
 
-`default_on: true` applies the guardrail automatically.
+In production, pair this with LiteLLM authentication and per-key model allowlists so the HR application key can only call `hr-assistant`, the makeup application key can only call `makeup-assistant`, and so on. Do not rely only on client-side discipline to choose the correct model alias.
 
-`flag_only: false` sends `flagOnly: false` to ScanAPI, allowing F5 AI Security to return `blocked` for blocking guardrails. If ScanAPI returns `flagged`, this example allows the LiteLLM request to continue.
+`default_on: true` is intentional in the multi-project example for LiteLLM v1.85. In this version, the proxy pre-call hook sees an empty `requested_guardrails` list before model routing metadata is fully applied. Setting `default_on: true` ensures LiteLLM calls the guardrail, while `route_models` inside `f5_guardrail.py` prevents the wrong F5 project from scanning the wrong app route.
 
-`api_base` defaults to the US region shown above. You can also set `F5_GUARDRAILS_API_BASE` in the environment if you need a different F5 AI Security base URL.
+The complete example is in `config.multi-project.example.yaml`.
+
+## Response Scanning
+
+To scan model output as well as user input, define a second guardrail entry using the same class with `mode: post_call`, then enable both guardrails for the model:
+
+```yaml
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      guardrails:
+        - f5-guardrail-input
+        - f5-guardrail-output
+
+guardrails:
+  - guardrail_name: f5-guardrail-input
+    litellm_params:
+      guardrail: f5_guardrail.f5Guardrail
+      mode: pre_call
+      default_on: true
+
+  - guardrail_name: f5-guardrail-output
+    litellm_params:
+      guardrail: f5_guardrail.f5Guardrail
+      mode: post_call
+      default_on: true
+```
+
+For non-streaming chat completions, a `post_call` guardrail can validate or redact generated text before the response is returned. For streaming responses, LiteLLM post-call guardrails run after the full stream has already been delivered, so they are useful for audit/logging but not for real-time blocking. Use a streaming iterator hook for real-time streaming enforcement.
+
+The current implementation scans any `texts` list LiteLLM passes to `apply_guardrail`, so the same ScanAPI decision logic is reused for request and response text.
+
+## Customer Test Checklist
+
+- Pin LiteLLM to `ghcr.io/berriai/litellm:1.85.0`.
+- Mount this repository into the container and set `PYTHONPATH=/app/src`.
+- Pass only environment variable names or placeholder tokens in shared docs.
+- Confirm logs show `F5 Guardrail (v1.85): Scanning text`.
+- Test `cleared`, `redacted`, `flagged`, and `blocked` F5 policy outcomes.
+- Do not share verbose LiteLLM logs without redacting provider API keys.
 
 ## Notes
 

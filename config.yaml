@@ -1,15 +1,29 @@
+# config.yaml
+# This configuration is specifically structured for LiteLLM v1.85.
+
 model_list:
   - model_name: gpt-4o-mini
     litellm_params:
       model: openai/gpt-4o-mini
       api_key: os.environ/OPENAI_API_KEY
+      # Enable the guardrail for this model. Do not use "callbacks" here;
+      # LiteLLM forwards unknown litellm_params to OpenAI.
+      guardrails:
+        - f5-guardrail
 
+# Define the guardrail at the top level of the configuration.
+# This tells LiteLLM where to find the code for "f5-guardrail".
 guardrails:
-  - guardrail_name: f5-guardrail
+  - guardrail_name: f5-guardrail # This name must match the guardrails entry above.
     litellm_params:
+      # This points to the Python file and the class within it.
+      # Format: <file_name>.<class_name>
       guardrail: f5_guardrail.f5Guardrail
+      # This specifies that the guardrail should run before the LLM call.
       mode: pre_call
+      # This ensures the guardrail is on by default.
       default_on: true
-      api_key: os.environ/F5_GUARDRAILS_API_TOKEN
-      api_base: https://www.us1.calypsoai.app/backend/v1
-      flag_only: false
+
+litellm_settings:
+  # Set the log level for detailed debugging.
+  set_verbose: true

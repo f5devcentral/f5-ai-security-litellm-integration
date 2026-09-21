@@ -29,6 +29,7 @@ class f5Guardrail(CustomGuardrail):
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
         flag_only: Optional[Union[bool, str]] = None,
+        route_models: Optional[Union[List[str], str]] = None,
         **kwargs,
     ):
         # LiteLLM passes values from config.yaml; env vars keep local runs simple.
@@ -38,6 +39,7 @@ class f5Guardrail(CustomGuardrail):
         )
         # flagOnly=false lets ScanAPI return blocking decisions as "blocked".
         self.flag_only = self._resolve_flag_only(flag_only)
+        self.route_models = self._resolve_route_models(route_models)
         super().__init__(**kwargs)
 
     @staticmethod
@@ -55,21 +57,190 @@ class f5Guardrail(CustomGuardrail):
             return flag_only.lower() in ("1", "true", "yes", "on")
         return flag_only
 
+    @staticmethod
+    def _resolve_route_models(
+        route_models: Optional[Union[List[str], str]],
+    ) -> Optional[set]:
+        if route_models is None:
+            return None
+        if isinstance(route_models, str):
+            return {
+                route_model.strip()
+                for route_model in route_models.split(",")
+                if route_model.strip()
+            }
+        return set(route_models)
+
     async def apply_guardrail(
         self,
-        text: str,
-        language: Optional[str] = None,  # unused
-        entities: Optional[List[PiiEntityType]] = None,  # unused
-        request_data: Optional[dict] = None,  # unused
-    ) -> str:
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         """
-        Scan the prompt with F5 AI Security before LiteLLM calls the model.
+        Scans the prompt with F5 AI Security before LiteLLM calls the model.
+        Tailored to LiteLLM v1.85, which passes a dict-like inputs payload.
+        """
+        print("F5 Guardrail: async_pre_call_hook running...", flush=True)
 
-        Return the original or redacted text to allow the call. Raise an
-        exception to block the call.
-        """
-        response_data = await self._check_with_api(text)
-        return self._apply_scan_result(text=text, response_data=response_data)
+        def _get_field(value: Any, field: str) -> Any:
+            if isinstance(value, dict):
+                return value.get(field)
+            return getattr(value, field, None)
+
+        # ---------------------------------------------------------
+        # Scenario A: LiteLLM v1.85 Schema (message list of dicts)
+        # ---------------------------------------------------------
+        raw_inputs = kwargs.get("inputs")
+        request_data = kwargs.get("request_data")
+        data = kwargs.get("data")
+        proxy_server_request = kwargs.get("proxy_server_request")
+
+        request_model = (
+            _get_field(request_data, "model")
+            or _get_field(data, "model")
+            or _get_field(raw_inputs, "model")
+        )
+        if not request_model and proxy_server_request is not None:
+            body = _get_field(proxy_server_request, "body")
+            if isinstance(body, dict):
+                request_model = body.get("model")
+
+        if self.route_models and request_model not in self.route_models:
+            print(
+                f"F5 Guardrail: skipping model '{request_model}' for routes "
+                f"{sorted(self.route_models)}",
+                flush=True,
+            )
+            return raw_inputs
+
+        if isinstance(raw_inputs, dict):
+            texts = raw_inputs.get("texts")
+            if isinstance(texts, list):
+                redacted_texts = []
+                for text_to_scan in texts:
+                    if isinstance(text_to_scan, str) and text_to_scan:
+                        print(
+                            f"F5 Guardrail (v1.85): Scanning text: '{text_to_scan}'",
+                            flush=True,
+                        )
+                        response_data = await self._check_with_api(text_to_scan)
+                        redacted_texts.append(
+                            self._apply_scan_result(
+                                text=text_to_scan,
+                                response_data=response_data,
+                            )
+                        )
+                    else:
+                        redacted_texts.append(text_to_scan)
+
+                raw_inputs["texts"] = redacted_texts
+                print(
+                    "F5 Guardrail (v1.85): Scan complete. Returning modified inputs.",
+                    flush=True,
+                )
+                return raw_inputs
+
+            structured_messages = raw_inputs.get("structured_messages")
+            if isinstance(structured_messages, list) and structured_messages:
+                last_message = next(
+                    (
+                        message
+                        for message in reversed(structured_messages)
+                        if isinstance(message, dict) and message.get("role") == "user"
+                    ),
+                    structured_messages[-1],
+                )
+                text_to_scan = (
+                    last_message.get("content", "")
+                    if isinstance(last_message, dict)
+                    else ""
+                )
+
+                if isinstance(text_to_scan, str) and text_to_scan:
+                    print(
+                        f"F5 Guardrail (v1.85): Scanning structured message: '{text_to_scan}'",
+                        flush=True,
+                    )
+                    response_data = await self._check_with_api(text_to_scan)
+                    last_message["content"] = self._apply_scan_result(
+                        text=text_to_scan,
+                        response_data=response_data,
+                    )
+                    print(
+                        "F5 Guardrail (v1.85): Scan complete. Returning modified inputs.",
+                        flush=True,
+                    )
+
+                return raw_inputs
+
+        inputs = raw_inputs if isinstance(raw_inputs, list) else None
+        if inputs is None and isinstance(raw_inputs, dict):
+            inputs = raw_inputs.get("inputs") or raw_inputs.get("messages")
+        if inputs is None:
+            inputs = kwargs.get("messages")
+        if inputs is None and request_data is not None:
+            inputs = _get_field(request_data, "inputs") or _get_field(
+                request_data, "messages"
+            )
+        if inputs is None and data is not None:
+            inputs = _get_field(data, "inputs") or _get_field(data, "messages")
+        if inputs is None and proxy_server_request is not None:
+            body = _get_field(proxy_server_request, "body")
+            if isinstance(body, dict):
+                inputs = body.get("inputs") or body.get("messages")
+        if inputs is None and args and isinstance(args[0], list):
+            inputs = args[0]
+
+        if inputs is not None and isinstance(inputs, list):
+            if not inputs:
+                print("F5 Guardrail: Empty message list skipped.", flush=True)
+                return inputs
+
+            last_message = next(
+                (
+                    message
+                    for message in reversed(inputs)
+                    if isinstance(message, dict) and message.get("role") == "user"
+                ),
+                inputs[-1],
+            )
+            text_to_scan = (
+                last_message.get("content", "") if isinstance(last_message, dict) else ""
+            )
+
+            if isinstance(text_to_scan, str) and text_to_scan:
+                print(f"F5 Guardrail (v1.85): Scanning text: '{text_to_scan}'", flush=True)
+                response_data = await self._check_with_api(text_to_scan)
+                redacted_text = self._apply_scan_result(
+                    text=text_to_scan,
+                    response_data=response_data,
+                )
+                last_message["content"] = redacted_text
+                print(
+                    "F5 Guardrail (v1.85): Scan complete. Returning modified inputs.",
+                    flush=True,
+                )
+            else:
+                print("F5 Guardrail (v1.85): Empty prompt text skipped.", flush=True)
+
+            return inputs
+
+        # ---------------------------------------------------------
+        # Fallback: No recognizable input format matched
+        # ---------------------------------------------------------
+        print(
+            "F5 Guardrail: No valid LiteLLM v1.85 'inputs' payload found. "
+            "Skipping scan.",
+            flush=True,
+        )
+        kwarg_types = {key: type(value).__name__ for key, value in kwargs.items()}
+        print(
+            f"F5 Guardrail: arg_types={[type(arg).__name__ for arg in args]}, "
+            f"kwarg_types={kwarg_types}, "
+            f"kwarg_keys={list(kwargs.keys())}",
+            flush=True,
+        )
+        return raw_inputs
 
     def _apply_scan_result(self, text: str, response_data: dict) -> str:
         # ScanAPI returns result.outcome as the normalized policy decision.

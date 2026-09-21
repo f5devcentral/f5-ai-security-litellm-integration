@@ -1,0 +1,54 @@
+# config.multi-project.example.yaml
+# Example: route different LiteLLM application/model aliases to different
+# F5 AI Security projects by assigning a different F5 API token per guardrail.
+#
+# Do not put real API keys in this file. Use environment variables.
+
+model_list:
+  # HR assistant traffic. This can point at the same underlying model as other
+  # applications, but uses an HR-specific F5 project/policy.
+  - model_name: hr-assistant
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      guardrails:
+        - f5-hr-project-input
+
+  # Makeup assistant traffic. Same model provider is fine, but this route uses
+  # a different F5 project/policy.
+  - model_name: makeup-assistant
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      guardrails:
+        - f5-makeup-project-input
+
+guardrails:
+  - guardrail_name: f5-hr-project-input
+    litellm_params:
+      guardrail: f5_guardrail.f5Guardrail
+      mode: pre_call
+      # LiteLLM v1.85 only calls proxy pre-call guardrails reliably when they
+      # are default_on. route_models keeps this guardrail scoped to HR traffic.
+      default_on: true
+      route_models:
+        - hr-assistant
+      api_key: os.environ/F5_HR_PROJECT_API_TOKEN
+      api_base: os.environ/F5_GUARDRAILS_API_BASE
+      flag_only: false
+
+  - guardrail_name: f5-makeup-project-input
+    litellm_params:
+      guardrail: f5_guardrail.f5Guardrail
+      mode: pre_call
+      # LiteLLM v1.85 only calls proxy pre-call guardrails reliably when they
+      # are default_on. route_models keeps this guardrail scoped to makeup traffic.
+      default_on: true
+      route_models:
+        - makeup-assistant
+      api_key: os.environ/F5_MAKEUP_PROJECT_API_TOKEN
+      api_base: os.environ/F5_GUARDRAILS_API_BASE
+      flag_only: false
+
+litellm_settings:
+  set_verbose: true
