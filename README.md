@@ -12,6 +12,7 @@ This example is not a fully maintained product integration. Changes in LiteLLM o
 
 - `f5_guardrail.py`: LiteLLM custom guardrail implementation.
 - `config.yaml`: Minimal LiteLLM proxy configuration.
+- `config.multi-project.example.yaml`: Example routing multiple application aliases to different F5 projects.
 - `.env.example`: Required environment variables.
 - `requirements.txt`: Python dependencies for running the example.
 
@@ -89,6 +90,14 @@ curl http://localhost:4000/v1/chat/completions \
 The guardrail is registered in `config.yaml`:
 
 ```yaml
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      guardrails:
+        - f5-guardrail
+
 guardrails:
   - guardrail_name: f5-guardrail
     litellm_params:
@@ -100,6 +109,10 @@ guardrails:
       flag_only: false
 ```
 
+The request `model` must match a `model_name` in `model_list`; the included config exposes `gpt-4o-mini`.
+
+`guardrails` under `model_list[].litellm_params` enables the guardrail for that model.
+
 `mode: pre_call` tells LiteLLM to scan input before calling the model.
 
 `default_on: true` applies the guardrail automatically.
@@ -107,6 +120,72 @@ guardrails:
 `flag_only: false` sends `flagOnly: false` to ScanAPI, allowing F5 AI Security to return `blocked` for blocking guardrails. If ScanAPI returns `flagged`, this example allows the LiteLLM request to continue.
 
 `api_base` defaults to the US region shown above. You can also set `F5_GUARDRAILS_API_BASE` in the environment if you need a different F5 AI Security base URL.
+
+## Multiple Applications and Policies
+
+LiteLLM can expose different application-facing model aliases while sending traffic to the same underlying provider model. This is useful when each application needs a different F5 AI Security project or policy.
+
+The recommended mapping is:
+
+```text
+application -> LiteLLM model_name alias -> LiteLLM guardrail -> F5 API token -> F5 project/policy
+```
+
+For example, `config.multi-project.example.yaml` defines:
+
+```yaml
+model_list:
+  - model_name: hr-assistant
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      guardrails:
+        - f5-hr-project-input
+
+  - model_name: makeup-assistant
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      guardrails:
+        - f5-makeup-project-input
+
+guardrails:
+  - guardrail_name: f5-hr-project-input
+    litellm_params:
+      guardrail: f5_guardrail.f5Guardrail
+      mode: pre_call
+      default_on: false
+      api_key: os.environ/F5_HR_PROJECT_API_TOKEN
+      api_base: os.environ/F5_GUARDRAILS_API_BASE
+      flag_only: false
+
+  - guardrail_name: f5-makeup-project-input
+    litellm_params:
+      guardrail: f5_guardrail.f5Guardrail
+      mode: pre_call
+      default_on: false
+      api_key: os.environ/F5_MAKEUP_PROJECT_API_TOKEN
+      api_base: os.environ/F5_GUARDRAILS_API_BASE
+      flag_only: false
+```
+
+Both aliases use `openai/gpt-4o-mini`, but LiteLLM applies different guardrails and therefore different F5 project tokens. In production, pair this with LiteLLM authentication and per-key model allowlists so each application can only call its assigned alias.
+
+To run the multi-project example with Docker:
+
+```bash
+docker run -d \
+  --name litellm-test \
+  -p 4000:4000 \
+  -v "$(pwd)":/app/src \
+  -e PYTHONPATH="/app/src" \
+  -e OPENAI_API_KEY="${OPENAI_API_KEY}" \
+  -e F5_GUARDRAILS_API_BASE="${F5_GUARDRAILS_API_BASE}" \
+  -e F5_HR_PROJECT_API_TOKEN="${F5_HR_PROJECT_API_TOKEN}" \
+  -e F5_MAKEUP_PROJECT_API_TOKEN="${F5_MAKEUP_PROJECT_API_TOKEN}" \
+  ghcr.io/berriai/litellm:latest \
+  --config /app/src/config.multi-project.example.yaml --port 4000 --detailed_debug
+```
 
 ## Notes
 

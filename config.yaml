@@ -3,6 +3,8 @@ model_list:
     litellm_params:
       model: openai/gpt-4o-mini
       api_key: os.environ/OPENAI_API_KEY
+      guardrails:
+        - f5-guardrail
 
 guardrails:
   - guardrail_name: f5-guardrail

@@ -33,9 +33,10 @@ class f5Guardrail(CustomGuardrail):
     ):
         # LiteLLM passes values from config.yaml; env vars keep local runs simple.
         self.api_key = self._resolve_config_value(api_key, "F5_GUARDRAILS_API_TOKEN")
-        self.api_base = api_base or os.getenv(
-            "F5_GUARDRAILS_API_BASE", "https://www.us1.calypsoai.app/backend/v1"
-        )
+        self.api_base = self._resolve_config_value(
+            api_base,
+            "F5_GUARDRAILS_API_BASE",
+        ) or "https://www.us1.calypsoai.app/backend/v1"
         # flagOnly=false lets ScanAPI return blocking decisions as "blocked".
         self.flag_only = self._resolve_flag_only(flag_only)
         super().__init__(**kwargs)
@@ -57,17 +58,44 @@ class f5Guardrail(CustomGuardrail):
 
     async def apply_guardrail(
         self,
-        text: str,
+        *args: Any,
+        text: Optional[str] = None,
         language: Optional[str] = None,  # unused
         entities: Optional[List[PiiEntityType]] = None,  # unused
         request_data: Optional[dict] = None,  # unused
-    ) -> str:
+        **kwargs: Any,
+    ) -> Any:
         """
         Scan the prompt with F5 AI Security before LiteLLM calls the model.
 
         Return the original or redacted text to allow the call. Raise an
         exception to block the call.
         """
+        inputs = kwargs.get("inputs")
+        if inputs is None and args and isinstance(args[0], dict):
+            inputs = args[0]
+
+        if isinstance(inputs, dict):
+            texts = inputs.get("texts")
+            if isinstance(texts, list):
+                inputs["texts"] = [
+                    await self._scan_text(text_to_scan)
+                    if isinstance(text_to_scan, str) and text_to_scan
+                    else text_to_scan
+                    for text_to_scan in texts
+                ]
+                return inputs
+            return inputs
+
+        if text is None and args and isinstance(args[0], str):
+            text = args[0]
+
+        if not text:
+            return text
+
+        return await self._scan_text(text)
+
+    async def _scan_text(self, text: str) -> str:
         response_data = await self._check_with_api(text)
         return self._apply_scan_result(text=text, response_data=response_data)
 
